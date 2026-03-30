@@ -2,6 +2,7 @@ from fastapi import FastAPI
 import uvicorn
 import pandas as pd
 import warnings
+import duckdb
 
 
 app = FastAPI()
@@ -30,6 +31,12 @@ def portfolio():
     df.drop([0], inplace=True)
 
     print(df.head())
+
+    con = duckdb.connect("algory.duckdb")
+    con.execute("DROP TABLE IF EXISTS positions")
+    con.execute("CREATE TABLE positions AS SELECT * FROM df LIMIT 0")
+
+    con.append("positions", df)
 
     return df
 
