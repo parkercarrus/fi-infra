@@ -19,7 +19,7 @@ def portfolio():
     df = pd.read_csv(url)
 
     # looks for columns E:H 
-    df = df.iloc[:,[4,5,6,7]]
+    df = df.iloc[:,[4,7]]
 
     # drops the Weird ADBE and CRM Numbers at 
     df.dropna(inplace = True)
@@ -31,6 +31,7 @@ def portfolio():
     df.drop([0], inplace=True)
 
     print(df.head())
+    df.insert(0, "timestamp", pd.Timestamp.now())
 
     con = duckdb.connect("algory.duckdb")
     con.execute("DROP TABLE IF EXISTS positions")

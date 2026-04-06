@@ -9,9 +9,8 @@ def initialize_duckdb() -> int:
 
     con.execute("""
     CREATE TABLE IF NOT EXISTS positions (
+        timestamp TIMESTAMP,
         ticker TEXT,
-        entry_date TEXT,
-        avg_cost DOUBLE,
         num_shares INT,
     );
     """)
