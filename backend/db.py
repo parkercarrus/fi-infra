@@ -12,6 +12,7 @@ def initialize_duckdb() -> int:
         timestamp TIMESTAMP,
         ticker TEXT,
         num_shares INT,
+        price INT,
     );
     """)
 

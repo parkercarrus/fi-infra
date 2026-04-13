@@ -19,11 +19,11 @@ def portfolio():
     df = pd.read_csv(url)
 
     # looks for columns E:H 
-    df = df.iloc[:,[4,7]]
+    df = df.iloc[:,[4,10]]
 
     # drops the Weird ADBE and CRM Numbers at 
     df.dropna(inplace = True)
-
+    
     for i in range(df.shape[1]):
         warnings.filterwarnings('ignore')
         df.rename(columns={df.columns[i]:df.iloc[0][i]}, inplace=True)
