@@ -4,7 +4,6 @@ import pandas as pd
 import warnings
 import duckdb
 
-
 app = FastAPI()
 
 @app.get("/health")

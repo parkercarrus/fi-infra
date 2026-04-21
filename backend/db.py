@@ -12,7 +12,7 @@ def initialize_duckdb() -> int:
         timestamp TIMESTAMP,
         ticker TEXT,
         num_shares INT,
-        price INT,
+        price INT
     );
     """)
 
@@ -22,3 +22,4 @@ def initialize_duckdb() -> int:
 
 if __name__ == "__main__":
     initialize_duckdb()
+#initialize_duckdb()
