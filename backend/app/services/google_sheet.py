@@ -283,4 +283,7 @@ def refresh_positions_from_sheet(
         )
 
     rebuild_position_history()
+    from backend.app.services.portfolio import sync_portfolio_table
+
+    sync_portfolio_table()
     return len(positions)

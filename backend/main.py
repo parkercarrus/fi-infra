@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import get_settings
 from backend.app.routers.dashboard import router as dashboard_router
+from backend.db import initialize_duckdb
 
 
 settings = get_settings()
@@ -17,6 +18,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(dashboard_router)
+
+
+@app.on_event("startup")
+def initialize_database() -> None:
+    initialize_duckdb()
 
 
 def main() -> None:

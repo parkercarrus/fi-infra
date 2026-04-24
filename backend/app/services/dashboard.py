@@ -17,7 +17,6 @@ from backend.app.models import (
     PositionSnapshot,
     TradeHistoryRow,
 )
-from backend.app.services.google_sheet import ensure_position_tables
 
 
 ZERO = Decimal("0")
@@ -89,6 +88,9 @@ class PositionRow:
     as_of: datetime
     ticker: str
     pnl_label: str
+    shares: Decimal | None = None
+    average_cost: Decimal | None = None
+    market_price: Decimal | None = None
 
 
 @dataclass
@@ -111,17 +113,75 @@ def _parse_pnl_percent(raw_value: str) -> Decimal:
     return Decimal(cleaned) / Decimal("100")
 
 
+def _format_pnl_label_from_prices(
+    average_cost: Decimal | None,
+    market_price: Decimal | None,
+) -> str:
+    if not average_cost or average_cost <= ZERO or market_price is None:
+        return "0.00%"
+    pnl_percent = ((market_price / average_cost) - Decimal("1")) * Decimal("100")
+    return f"{pnl_percent.quantize(Decimal('0.01'))}%"
+
+
 def _load_position_rows() -> list[PositionRow]:
     with duckdb_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT timestamp, "$Ticker " AS ticker, "P&L (%)" AS pnl_percent
-            FROM positions
-            ORDER BY ticker
-            """
-        ).fetchall()
+        tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'main'
+                """
+            ).fetchall()
+        }
 
-    return [PositionRow(as_of=row[0], ticker=row[1], pnl_label=row[2]) for row in rows]
+        if "portfolio" in tables:
+            rows = connection.execute(
+                """
+                SELECT
+                    COALESCE(portfolio.timestamp, positions.timestamp) AS as_of,
+                    COALESCE(portfolio.ticker, positions."$Ticker ") AS ticker,
+                    positions."P&L (%)" AS pnl_label,
+                    portfolio.num_shares,
+                    portfolio.avg_cost,
+                    portfolio.price
+                FROM positions
+                FULL OUTER JOIN portfolio
+                    ON portfolio.ticker = positions."$Ticker "
+                ORDER BY ticker
+                """
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT
+                    timestamp,
+                    "$Ticker " AS ticker,
+                    "P&L (%)" AS pnl_label,
+                    NULL AS num_shares,
+                    NULL AS avg_cost,
+                    NULL AS price
+                FROM positions
+                ORDER BY ticker
+                """
+            ).fetchall()
+
+    return [
+        PositionRow(
+            as_of=row[0],
+            ticker=row[1],
+            pnl_label=row[2] or _format_pnl_label_from_prices(
+                Decimal(str(row[4])) if row[4] is not None else None,
+                Decimal(str(row[5])) if row[5] is not None else None,
+            ),
+            shares=Decimal(str(row[3])) if row[3] is not None else None,
+            average_cost=Decimal(str(row[4])) if row[4] is not None else None,
+            market_price=Decimal(str(row[5])) if row[5] is not None else None,
+        )
+        for row in rows
+        if row[0] is not None and row[1] is not None
+    ]
 
 
 def _load_trade_rows() -> list[TradeHistoryRow]:
@@ -148,8 +208,20 @@ def _load_trade_rows() -> list[TradeHistoryRow]:
 
 
 def _load_position_history() -> dict[str, dict[date, float]]:
-    ensure_position_tables()
     with duckdb_connection() as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'main'
+                """
+            ).fetchall()
+        }
+        if "position_history" not in tables:
+            return {}
+
         rows = connection.execute(
             """
             SELECT as_of_date, ticker, pnl_percent
@@ -162,6 +234,51 @@ def _load_position_history() -> dict[str, dict[date, float]]:
     for as_of_date, ticker, pnl_percent in rows:
         history[ticker][as_of_date] = float(pnl_percent)
     return history
+
+
+def _load_trade_flows() -> dict[date, Decimal]:
+    with duckdb_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT CAST(timestamp AS DATE) AS as_of_date, SUM(num_shares * price) AS net_flow
+            FROM trade_history
+            GROUP BY 1
+            ORDER BY 1
+            """
+        ).fetchall()
+
+    return {
+        row[0]: Decimal(str(row[1]))
+        for row in rows
+        if row[1] is not None
+    }
+
+
+def _load_curve_from_portfolio_history() -> list[tuple[date, Decimal]]:
+    with duckdb_connection() as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'main'
+                """
+            ).fetchall()
+        }
+        if "portfolio_history" not in tables:
+            return []
+
+        rows = connection.execute(
+            """
+            SELECT as_of_date, SUM(market_value) AS portfolio_value
+            FROM portfolio_history
+            GROUP BY 1
+            ORDER BY 1
+            """
+        ).fetchall()
+
+    return [(row[0], Decimal(str(row[1]))) for row in rows if row[1] is not None]
 
 
 def _build_ledgers(trades: list[TradeHistoryRow]) -> dict[str, PositionLedger]:
@@ -258,8 +375,23 @@ def _build_current_positions(
         market_price = None
         market_value = None
         unrealized_pnl = None
+        shares = row.shares
 
-        if ledger.modeled_shares > ZERO and ledger.modeled_cost_basis > ZERO:
+        if (
+            row.shares is not None
+            and row.average_cost is not None
+            and row.market_price is not None
+            and row.shares > ZERO
+        ):
+            average_cost = row.average_cost
+            market_price = row.market_price
+            market_value = market_price * row.shares
+            unrealized_pnl = market_value - (average_cost * row.shares)
+            current_price_map[row.ticker] = market_price
+            portfolio_value += market_value
+            total_unrealized += unrealized_pnl
+        elif ledger.modeled_shares > ZERO and ledger.modeled_cost_basis > ZERO:
+            shares = ledger.modeled_shares
             average_cost = ledger.modeled_cost_basis / ledger.modeled_shares
             market_price = average_cost * (Decimal("1") + pnl_percent)
             market_value = market_price * ledger.modeled_shares
@@ -269,7 +401,7 @@ def _build_current_positions(
             total_unrealized += unrealized_pnl
 
         coverage_status = "modeled"
-        if ledger.has_coverage_gap or market_value is None:
+        if market_value is None or (row.shares is None and ledger.has_coverage_gap):
             coverage_status = "partial"
 
         positions.append(
@@ -280,7 +412,7 @@ def _build_current_positions(
                 pnl_percent=float(pnl_percent),
                 pnl_label=row.pnl_label,
                 coverage_status=coverage_status,
-                shares=_decimal_to_float(ledger.modeled_shares if ledger.modeled_shares > ZERO else None),
+                shares=_decimal_to_float(shares if shares and shares > ZERO else None),
                 average_cost=_decimal_to_float(average_cost),
                 market_price=_decimal_to_float(market_price),
                 market_value=_decimal_to_float(market_value),
@@ -420,6 +552,50 @@ def _build_curve(
     return points, daily_returns
 
 
+def _build_curve_from_history(
+    history_points: list[tuple[date, Decimal]],
+    trade_flows: dict[date, Decimal],
+) -> tuple[list[CurvePoint], list[float]]:
+    if not history_points:
+        return [], []
+
+    points: list[CurvePoint] = []
+    daily_returns: list[float] = []
+    nav = NAV_START
+    peak_nav = NAV_START
+    previous_value = ZERO
+
+    for current_date, portfolio_value in history_points:
+        net_flow = trade_flows.get(current_date, ZERO)
+
+        if previous_value > ZERO:
+            denominator = previous_value + (net_flow / Decimal("2"))
+            if denominator > ZERO:
+                daily_return = (portfolio_value - previous_value - net_flow) / denominator
+            else:
+                daily_return = ZERO
+            nav *= Decimal("1") + daily_return
+            daily_returns.append(float(daily_return))
+        else:
+            daily_return = ZERO
+
+        if nav > peak_nav:
+            peak_nav = nav
+        drawdown = (nav / peak_nav) - Decimal("1") if peak_nav > ZERO else ZERO
+        points.append(
+            CurvePoint(
+                date=current_date,
+                portfolio_value=float(portfolio_value),
+                nav=float(nav),
+                drawdown=float(drawdown),
+                net_flow=float(net_flow),
+            )
+        )
+        previous_value = portfolio_value
+
+    return points, daily_returns
+
+
 def _recent_pnl(curve: list[CurvePoint]) -> tuple[float, float]:
     if not curve:
         return 0.0, 0.0
@@ -525,6 +701,8 @@ def get_platform_data() -> PlatformResponse:
     position_rows = _load_position_rows()
     trades = _load_trade_rows()
     position_history = _load_position_history()
+    trade_flows = _load_trade_flows()
+    portfolio_history_curve = _load_curve_from_portfolio_history()
     ledgers = _build_ledgers(trades)
 
     snapshot_date = max((row.as_of.date() for row in position_rows), default=date.today())
@@ -532,13 +710,19 @@ def get_platform_data() -> PlatformResponse:
         position_rows,
         ledgers,
     )
-    price_anchors = _build_price_anchors(trades, current_price_map, snapshot_date)
-    curve, daily_returns = _build_curve(
-        trades,
-        price_anchors,
-        snapshot_date,
-        position_history,
-    )
+    if portfolio_history_curve:
+        curve, daily_returns = _build_curve_from_history(
+            portfolio_history_curve,
+            trade_flows,
+        )
+    else:
+        price_anchors = _build_price_anchors(trades, current_price_map, snapshot_date)
+        curve, daily_returns = _build_curve(
+            trades,
+            price_anchors,
+            snapshot_date,
+            position_history,
+        )
     recent_pnl, recent_pnl_percent = _recent_pnl(curve)
     sector_exposure = _build_exposure(positions, "sector")
     risk_exposure = _build_exposure(positions, "risk_bucket")

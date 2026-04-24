@@ -15,6 +15,17 @@ def ensure_theoretical_tables() -> None:
     try:
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS portfolio (
+                timestamp TIMESTAMP,
+                ticker VARCHAR,
+                num_shares INTEGER,
+                avg_cost DOUBLE,
+                price DOUBLE
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS positions (
                 timestamp TIMESTAMP,
                 "$Ticker " VARCHAR,
@@ -45,8 +56,35 @@ def reset_theoretical_db(source_db_path: str | Path | None = None) -> None:
     source = duckdb.connect(str(source_path), read_only=True)
     target = duckdb.connect(str(THEORETICAL_DB_PATH))
     try:
+        tables = {
+            row[0]
+            for row in source.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'main'
+                """
+            ).fetchall()
+        }
+        portfolio_rows = []
+        if "portfolio" in tables:
+            portfolio_rows = source.execute(
+                """
+                SELECT timestamp, ticker, num_shares, avg_cost, price
+                FROM portfolio
+                """
+            ).fetchall()
         rows = source.execute('SELECT timestamp, "$Ticker ", "P&L (%)" FROM positions').fetchall()
+        target.execute("DELETE FROM portfolio")
         target.execute("DELETE FROM positions")
+        if portfolio_rows:
+            target.executemany(
+                """
+                INSERT INTO portfolio (timestamp, ticker, num_shares, avg_cost, price)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                portfolio_rows,
+            )
         if rows:
             target.executemany(
                 'INSERT INTO positions (timestamp, "$Ticker ", "P&L (%)") VALUES (?, ?, ?)',

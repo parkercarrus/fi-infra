@@ -97,6 +97,18 @@ export function PerformanceChart({
   const [selectedRange, setSelectedRange] = useState("ALL");
   const deferredRange = useDeferredValue(selectedRange);
   const filteredPoints = filterPoints(points, deferredRange);
+  if (filteredPoints.length === 0) {
+    return (
+      <section className="rounded-[2.2rem] border border-white/8 bg-[linear-gradient(180deg,rgba(12,20,31,0.96),rgba(8,13,22,0.98))] p-6 shadow-[0_20px_80px_rgba(0,0,0,0.28)]">
+        <p className="text-[0.72rem] font-semibold uppercase tracking-[0.28em] text-[var(--broker-text-muted)]">
+          {title}
+        </p>
+        <div className="mt-6 rounded-[1.5rem] border border-dashed border-white/10 bg-white/[0.02] px-4 py-12 text-center text-sm uppercase tracking-[0.2em] text-[var(--broker-text-muted)]">
+          Portfolio history unavailable
+        </div>
+      </section>
+    );
+  }
   const latestPoint = filteredPoints[filteredPoints.length - 1];
   const firstPoint = filteredPoints[0];
   const deltaValue =
