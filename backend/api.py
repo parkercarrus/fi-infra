@@ -1,58 +1,104 @@
-# Access Google Sheets API / BNY Mellon API and return information
-from pathlib import Path
-import duckdb
-import yfinance as yf
+from __future__ import annotations
 
-Parent_Path = Path(__file__).resolve().parents[1] / "algory.duckdb"
-Parent_Path.parent.mkdir(parents=True, exist_ok=True)
-#from main import portfolio
-Theoretical_db_path = Parent_Path.parent / "Theoretical.duckdb"
+import argparse
 
-def fetchData(Timestamp):
-    df = portfolio()
+from backend.main import app, main
+from backend.app.services.google_sheet import rebuild_position_history, refresh_positions_from_sheet
+from backend.app.services.theoretical import add_theoretical_position, reset_theoretical_db
 
-    con = duckdb.connect(str(Parent_Path))
 
-    for i in range(df.shape[0]):
-        con.execute(f"""
-        INSERT INTO positions (timestamp, ticker, num_shares, price)
-        VALUES ({Timestamp}, {df.iloc[i][0]}, {df.iloc[i][3]}, {df.iloc[i][6]/df.iloc[i][3]});
-        );
-        """)
+def refresh_google_sheet_snapshot() -> int:
+    return refresh_positions_from_sheet()
 
-    return
 
-def ResetTheoreticalDB():
-    con = duckdb.connect(str(Parent_Path))
-    df = con.sql("SELECT * FROM positions").df()
-    con.close()
-    
-    Theoretical_db_path.unlink(missing_ok=True)
-    
-    new_con = duckdb.connect(str(Theoretical_db_path))
-    new_con.execute("CREATE TABLE positions AS SELECT * FROM df")
-    new_con.close()
-    print("Theoretical database created from dataframe.")
+def rebuild_history() -> int:
+    return rebuild_position_history()
 
-def addTheoreticalPosition(TICKER, ENTRANCE, EXIT, numShares = 1):
-    # dates formatted as YYYY-MM-DD
-    data = yf.download(TICKER, start=ENTRANCE, end=EXIT)
 
-    con = duckdb.connect(str(Theoretical_db_path))
+def reset_theoretical_positions() -> None:
+    reset_theoretical_db()
 
-    print("XXXX")
-    print(con.execute("SELECT * FROM positions").fetchdf())
-    
-    print("XXXX")
 
-    for i in range(data.shape[0]):
-        con.execute(f"""
-        INSERT INTO positions (timestamp, "$Ticker ", "num_shares", price)
-        VALUES ({data.index[i].timestamp()}, '{TICKER}', {numShares}, {data.iloc[i][3]});
-        """)
+def add_theoretical_positions(
+    ticker: str,
+    entrance: str,
+    exit: str,
+    num_shares: float = 1,
+) -> int:
+    return add_theoretical_position(
+        ticker=ticker,
+        entrance=entrance,
+        exit=exit,
+        num_shares=num_shares,
+    )
 
-ResetTheoreticalDB()
-addTheoreticalPosition("AMZN","2023-1-1","2024-1-1")
-con = duckdb.connect(str(Theoretical_db_path))
-df = con.sql("SELECT * FROM positions").df()
-df.head()
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Portfolio maintenance commands")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("serve", help="Run the API server")
+    subparsers.add_parser("refresh-sheet", help="Pull the latest Google Sheet snapshot into DuckDB")
+    subparsers.add_parser("rebuild-history", help="Rebuild the forward-filled daily position history table")
+    subparsers.add_parser("daily-refresh", help="Refresh the Google Sheet snapshot and rebuild history")
+    subparsers.add_parser("reset-theoretical", help="Reset the theoretical database from the current positions table")
+
+    add_theoretical_parser = subparsers.add_parser(
+        "add-theoretical",
+        help="Append a theoretical position price path from Yahoo Finance",
+    )
+    add_theoretical_parser.add_argument("ticker")
+    add_theoretical_parser.add_argument("entrance")
+    add_theoretical_parser.add_argument("exit")
+    add_theoretical_parser.add_argument("--num-shares", type=float, default=1)
+
+    return parser
+
+
+def cli() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if args.command == "serve":
+        main()
+        return
+
+    if args.command in {"refresh-sheet", "daily-refresh"}:
+        count = refresh_google_sheet_snapshot()
+        print(f"Loaded {count} rows from Google Sheets into positions and position_snapshots.")
+        return
+
+    if args.command == "rebuild-history":
+        count = rebuild_history()
+        print(f"Rebuilt position_history with {count} rows.")
+        return
+
+    if args.command == "reset-theoretical":
+        reset_theoretical_positions()
+        print("Theoretical database reset from current positions.")
+        return
+
+    if args.command == "add-theoretical":
+        count = add_theoretical_positions(
+            ticker=args.ticker,
+            entrance=args.entrance,
+            exit=args.exit,
+            num_shares=args.num_shares,
+        )
+        print(f"Added {count} theoretical rows for {args.ticker}.")
+        return
+
+
+__all__ = [
+    "app",
+    "main",
+    "refresh_google_sheet_snapshot",
+    "rebuild_history",
+    "reset_theoretical_positions",
+    "add_theoretical_positions",
+    "cli",
+]
+
+
+if __name__ == "__main__":
+    cli()

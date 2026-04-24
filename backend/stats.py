@@ -1,1 +1,3 @@
-# compute statistics, much like we did for the infrastructure project
+from backend.app.services.dashboard import get_dashboard_data
+
+__all__ = ["get_dashboard_data"]
